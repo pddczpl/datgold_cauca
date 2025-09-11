@@ -96,29 +96,20 @@ def handle_login():
         if user_data.get("role") == "admin":
             return jsonify({"status": "success", "role": "admin", "username": username})
 
-        stored_hwid = user_data.get("hwid")
-        stored_public_ip = user_data.get("public_ip")
+        if user_data.get('role') != 'admin' and user_data.get('status') == 'online':
+            return jsonify({"status": "error", "message": "This account is already online on another device."})
+        
+        users[username]['status'] = 'online'
+        users[username]['last_seen'] = int(time.time())
+        write_encrypted_json(users)
+        return jsonify({
+            "status": "success", 
+            "role": user_data.get("role"), 
+            "username": username,
+            "message": f"Welcome, {username}!"
+        })
 
-        if stored_hwid is None and stored_public_ip is None:
-            user_data["hwid"] = current_hwid
-            user_data["public_ip"] = current_public_ip
-            write_encrypted_json(users)
-            return jsonify({"status": "success", "role": "user", "username": username, "message": "Account locked to this device and network."})
-
-        if stored_hwid == current_hwid and stored_public_ip == current_public_ip:
-            return jsonify({"status": "success", "role": "user", "username": username})
-
-        if stored_public_ip == current_public_ip and stored_hwid != current_hwid:
-            user_data["hwid"] = current_hwid
-            write_encrypted_json(users)
-            return jsonify({"status": "success", "role": "user", "username": username, "message": "New device detected on a trusted network. HWID updated."})
-
-        if stored_hwid == current_hwid and stored_public_ip != current_public_ip:
-            user_data["public_ip"] = current_public_ip
-            write_encrypted_json(users)
-            return jsonify({"status": "success", "role": "user", "username": username, "message": "New network detected for a trusted device. IP updated."})
-
-    return jsonify({"status": "error", "message": "New device and new network detected. Please contact admin to reset your device lock."})
+    return jsonify({"status": "error", "message": "Liên hệ admin."})
 
 # --- Các API cho Admin ---
 def is_admin_authenticated(request_data):
