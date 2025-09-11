@@ -101,6 +101,8 @@ def handle_login():
         
         users[username]['status'] = 'online'
         users[username]['last_seen'] = int(time.time())
+        users[username]['hwid'] = current_hwid
+        users[username]['public_ip'] = current_public_ip
         write_encrypted_json(users)
         return jsonify({
             "status": "success", 
@@ -275,5 +277,4 @@ def check_offline_users():
 
 # Lệnh để chạy thử trên máy local, không dùng khi deploy
 if __name__ == "__main__":
-
     app.run(host='0.0.0.0', port=5000)
