@@ -135,11 +135,16 @@ def handle_register():
 
     if not all([new_username, new_password]):
         return jsonify({"status": "error", "message": "Missing new username or password"}), 400
+        
     with file_lock:
         users = read_encrypted_json()
+        if users is None:
+            return jsonify({"status": "error", "message": "Database corrupted on server"}), 500
+
         if new_username in users:
             return jsonify({"status": "error", "message": "Username already exists"})
         
+        # Thêm người dùng mới vào biến users (trong bộ nhớ)
         users[new_username] = {
             "password_hash": create_secure_hash(new_password), 
             "role": "user", 
@@ -150,10 +155,11 @@ def handle_register():
         }
     
         if write_encrypted_json(users):
+            # Nếu ghi thành công, trả về success
             return jsonify({"status": "success", "message": f"User '{new_username}' created."})
         else:
+            # Nếu ghi thất bại, trả về lỗi
             return jsonify({"status": "error", "message": "Failed to save user"}), 500
-    return jsonify({"status": "error", "message": "Failed to create user"}), 500
 
 @app.route('/users', methods=['POST'])
 def get_users():
@@ -269,4 +275,5 @@ def check_offline_users():
 
 # Lệnh để chạy thử trên máy local, không dùng khi deploy
 if __name__ == "__main__":
+
     app.run(host='0.0.0.0', port=5000)
