@@ -1,0 +1,20 @@
+# Tên của quy trình tự động, sẽ hiển thị trên GitHub
+name: Check Offline Users
+
+# Tác nhân kích hoạt: Lên lịch (schedule)
+on:
+  schedule:
+    # Chạy mỗi 5 phút (theo cú pháp cron)
+    - cron: '*/5 * * * *'
+
+# Các tác vụ cần thực hiện
+jobs:
+  cron:
+    # Sử dụng một máy ảo Ubuntu (Linux) mới nhất để chạy
+    runs-on: ubuntu-latest
+
+    # Các bước thực hiện
+    steps:
+      # Bước duy nhất: Dùng lệnh 'curl' để gọi đến API của bạn
+      - name: Call API to check offline users
+        run: curl -X GET https://datgold-cauca.onrender.com/check-offline 
