@@ -172,7 +172,13 @@ def get_users():
     
     users = read_encrypted_json()
     safe_user_list = {
-        user: {"role": data.get("role"), "hwid": data.get("hwid"), "public_ip": data.get("public_ip")}
+        user: {
+            "role": data.get("role"),
+            "hwid": data.get("hwid"), 
+            "public_ip": data.get("public_ip"),
+            "status": data.get("status", "offline"),
+            "last_seen": data.get("last_seen", 0)
+            }
         for user, data in users.items()
     }
     return jsonify({"status": "success", "users": safe_user_list})
