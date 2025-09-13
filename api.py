@@ -241,12 +241,12 @@ def handle_logout():
 
     if not username:
         return jsonify({"status": "error", "message": "Username required"}), 400
-
-    users = read_encrypted_json()
-    if users and username in users:
-        users[username]['status'] = 'offline'
-        write_encrypted_json(users)
-        return jsonify({"status": "success"})
+    with file_lock:
+        users = read_encrypted_json()
+        if users and username in users:
+            users[username]['status'] = 'offline'
+            write_encrypted_json(users)
+            return jsonify({"status": "success"})
 
     return jsonify({"status": "error", "message": "User not found"}), 404
 
@@ -277,4 +277,5 @@ def check_offline_users():
 
 # Lệnh để chạy thử trên máy local, không dùng khi deploy
 if __name__ == "__main__":
+
     app.run(host='0.0.0.0', port=5000)
