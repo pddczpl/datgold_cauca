@@ -4,8 +4,8 @@ name: Check Offline Users
 # Tác nhân kích hoạt: Lên lịch (schedule)
 on:
   schedule:
-    # Chạy mỗi 15 phút (theo cú pháp cron)
-    - cron: '0 */2 * * *'
+    # Chạy mỗi 4 tiếng (theo cú pháp cron)
+    - cron: '0 */4 * * *'
 
 # Các tác vụ cần thực hiện
 jobs:
