@@ -5,7 +5,7 @@ name: Check Offline Users
 on:
   schedule:
     # Chạy mỗi 15 phút (theo cú pháp cron)
-    - cron: '*/15 * * * *'
+    - cron: '0 */2 * * *'
 
 # Các tác vụ cần thực hiện
 jobs:
