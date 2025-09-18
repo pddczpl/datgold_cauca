@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 # ==================== CẤU HÌNH DATABASE ====================
 
 # Lấy chuỗi kết nối từ biến môi trường đã thiết lập trên Render
-DATABASE_URL = os.getenv('DATABASE_URL').encode()
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 def get_db_connection():
     """Tạo và trả về một kết nối tới database."""
@@ -343,5 +343,6 @@ def check_offline_users():
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
 
 
