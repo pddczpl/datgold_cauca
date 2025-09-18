@@ -8,6 +8,8 @@ from flask import Flask, request, jsonify
 # ==================== CẤU HÌNH DATABASE ====================
 
 # Lấy chuỗi kết nối từ biến môi trường đã thiết lập trên Render
+DATABASE_URL = os.getenv('postgresql://datgold_database_user:lwU11bDaJOcKZQBLYtx8P91z29PLkwxx@dpg-d32pcbjuibrs73a2h8t0-a/datgold_database')
+
 def get_db_connection():
     """Tạo và trả về một kết nối tới database."""
     try:
@@ -341,4 +343,3 @@ def check_offline_users():
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
