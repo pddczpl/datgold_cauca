@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 # ==================== CẤU HÌNH DATABASE ====================
 
 # Lấy chuỗi kết nối từ biến môi trường đã thiết lập trên Render
-DATABASE_URL = os.getenv('postgresql://datgold_database_user:lwU11bDaJOcKZQBLYtx8P91z29PLkwxx@dpg-d32pcbjuibrs73a2h8t0-a/datgold_database')
+DATABASE_URL = os.getenv('postgresql://neondb_owner:npg_p9P0VjYieONn@ep-morning-salad-a15540ty-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
 
 def get_db_connection():
     """Tạo và trả về một kết nối tới database."""
