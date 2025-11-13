@@ -1,3 +1,4 @@
 Flask
 cryptography
 gunicorn
+psycopg2
