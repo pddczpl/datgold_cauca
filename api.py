@@ -1,61 +1,33 @@
 import os
 import sys
-import json
 import time
-import threading
 import hashlib
+import psycopg2
 from flask import Flask, request, jsonify
-from cryptography.fernet import Fernet
 
-# ==================== CẤU HÌNH VÀ CÁC HÀM HELPER ====================
+# ==================== CẤU HÌNH DATABASE ====================
 
-# Dán chìa khóa bí mật bạn đã tạo vào đây
-SECRET_KEY = os.getenv('ENCRYPTION_KEY', 'a_default_key_that_is_not_secure').encode()
-cipher_suite = Fernet(SECRET_KEY)
+# Lấy chuỗi kết nối từ biến môi trường đã thiết lập trên Render
+DATABASE_URL = os.getenv('DATABASE_URL')
 
-DB_FILENAME = "users.dat" # Tên file database trên server
-file_lock = threading.Lock()
+def get_db_connection():
+    """Tạo và trả về một kết nối tới database."""
+    try:
+        # Kiểm tra xem DATABASE_URL có tồn tại không
+        if not DATABASE_URL:
+            print("FATAL: DATABASE_URL environment variable is not set.", file=sys.stderr)
+            return None
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"FATAL: Could not connect to the database: {e}", file=sys.stderr)
+        return None
+
+# ==================== CÁC HÀM HELPER ====================
 
 def create_secure_hash(password: str) -> str:
     """Băm mật khẩu bằng SHA-256."""
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
-
-def write_encrypted_json(data: dict):
-    """Ghi và mã hóa dữ liệu vào file."""
-    try:
-        json_data = json.dumps(data, indent=2).encode('utf-8')
-        encrypted_data = cipher_suite.encrypt(json_data)
-        with open(DB_FILENAME, 'wb') as f:
-            f.write(encrypted_data)
-        return True
-    except Exception as e:
-        print(f"Error writing encrypted file: {e}", file=sys.stderr)
-        return False
-
-def read_encrypted_json() -> dict | None:
-    """Đọc và giải mã dữ liệu từ file."""
-    try:
-        with open(DB_FILENAME, 'rb') as f:
-            encrypted_data = f.read()
-        decrypted_data = cipher_suite.decrypt(encrypted_data)
-        return json.loads(decrypted_data.decode('utf-8'))
-    except FileNotFoundError:
-        print("INFO: users.dat not found. Creating a new one with default admin.")
-        # Nếu file không tồn tại, tự tạo admin
-        initial_data = {
-            "DatGold": {
-                "password_hash": create_secure_hash("Emperor123@"),
-                "role": "admin",
-                "hwid": None,
-                "public_ip": None
-            }
-        }
-        if write_encrypted_json(initial_data):
-            return initial_data
-        return None
-    except Exception as e:
-        print(f"Error reading or decrypting file: {e}", file=sys.stderr)
-        return None
 
 # ==================== KHỞI TẠO APP FLASK ====================
 
@@ -65,7 +37,14 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "API Server is running."
+    # Kiểm tra kết nối database khi vào trang chủ
+    conn = get_db_connection()
+    if conn:
+        conn.close()
+        return "API Server is running and successfully connected to PostgreSQL."
+    else:
+        return "API Server is running BUT FAILED to connect to PostgreSQL. Check DATABASE_URL environment variable.", 500
+
 
 @app.route('/login', methods=['POST'])
 def handle_login():
@@ -73,45 +52,57 @@ def handle_login():
     username = data.get('username')
     password = data.get('password')
     current_hwid = data.get('hwid')
-    forwarded_for = request.headers.get('X-Forwarded-For')
-    if forwarded_for:
-        # Lấy địa chỉ IP đầu tiên trong chuỗi và xóa khoảng trắng
-        current_public_ip = forwarded_for.split(',')[0].strip()
-    else:
-        # Dùng remote_addr làm phương án dự phòng
-        current_public_ip = request.remote_addr
+    
+    current_public_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
 
-    if not all([username, password, current_hwid, current_public_ip]):
+    if not all([username, password, current_hwid]):
         return jsonify({"status": "error", "message": "Missing required data"}), 400
-    with file_lock:
-        users = read_encrypted_json()
-        if users is None:
-            return jsonify({"status": "error", "message": "Database corrupted on server"}), 500
 
-        user_data = users.get(username)
-
-        if not (user_data and create_secure_hash(password) == user_data.get("password_hash")):
-            return jsonify({"status": "error", "message": "Invalid username or password"})
-
-        if user_data.get("role") == "admin":
-            return jsonify({"status": "success", "role": "admin", "username": username})
-
-        if user_data.get('role') != 'admin' and user_data.get('status') == 'online':
-            return jsonify({"status": "error", "message": "This account is already online on another device."})
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"status": "error", "message": "Database connection error"}), 500
         
-        users[username]['status'] = 'online'
-        users[username]['last_seen'] = int(time.time())
-        users[username]['hwid'] = current_hwid
-        users[username]['public_ip'] = current_public_ip
-        write_encrypted_json(users)
-        return jsonify({
-            "status": "success", 
-            "role": user_data.get("role"), 
-            "username": username,
-            "message": f"Welcome, {username}!"
-        })
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT password_hash, role, status FROM users WHERE username = %s",
+                (username,)
+            )
+            user_record = cursor.fetchone()
 
-    return jsonify({"status": "error", "message": "Liên hệ admin."})
+            if not (user_record and create_secure_hash(password) == user_record[0]):
+                return jsonify({"status": "error", "message": "Invalid username or password"})
+
+            role, status = user_record[1], user_record[2]
+
+            if role == "admin":
+                return jsonify({"status": "success", "role": "admin", "username": username})
+
+            if role != 'admin' and status == 'online':
+                return jsonify({"status": "error", "message": "This account is already online."})
+            
+            cursor.execute(
+                """
+                UPDATE users 
+                SET status = 'online', last_seen = %s, hwid = %s, public_ip = %s 
+                WHERE username = %s
+                """,
+                (int(time.time()), current_hwid, current_public_ip, username)
+            )
+            conn.commit()
+            
+            return jsonify({
+                "status": "success", 
+                "role": role, 
+                "username": username,
+                "message": f"Welcome, {username}!"
+            })
+    except psycopg2.Error as e:
+        print(f"Login DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "An internal error occurred"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 # --- Các API cho Admin ---
 def is_admin_authenticated(request_data):
@@ -119,12 +110,25 @@ def is_admin_authenticated(request_data):
     admin_pass = request_data.get('admin_password')
     if not all([admin_user, admin_pass]): return False
     
-    users = read_encrypted_json()
-    admin_data = users.get(admin_user)
-
-    if admin_data and admin_data.get('role') == 'admin' and create_secure_hash(admin_pass) == admin_data.get('password_hash'):
-        return True
-    return False
+    conn = get_db_connection()
+    if not conn: return False
+    
+    is_valid = False
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT password_hash FROM users WHERE username = %s AND role = 'admin'",
+                (admin_user,)
+            )
+            admin_record = cursor.fetchone()
+            if admin_record and create_secure_hash(admin_pass) == admin_record[0]:
+                is_valid = True
+    except psycopg2.Error as e:
+        print(f"Admin Auth DB Error: {e}", file=sys.stderr)
+    finally:
+        if conn:
+            conn.close()
+    return is_valid
 
 @app.route('/register', methods=['POST'])
 def handle_register():
@@ -137,31 +141,33 @@ def handle_register():
 
     if not all([new_username, new_password]):
         return jsonify({"status": "error", "message": "Missing new username or password"}), 400
-        
-    with file_lock:
-        users = read_encrypted_json()
-        if users is None:
-            return jsonify({"status": "error", "message": "Database corrupted on server"}), 500
-
-        if new_username in users:
-            return jsonify({"status": "error", "message": "Username already exists"})
-        
-        # Thêm người dùng mới vào biến users (trong bộ nhớ)
-        users[new_username] = {
-            "password_hash": create_secure_hash(new_password), 
-            "role": "user", 
-            "hwid": None,
-            "public_ip": None,
-            "status": "offline",
-            "last_seen": 0
-        }
     
-        if write_encrypted_json(users):
-            # Nếu ghi thành công, trả về success
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"status": "error", "message": "Database connection error"}), 500
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, role, status, last_seen)
+                VALUES (%s, %s, 'user', 'offline', 0)
+                """,
+                (new_username, create_secure_hash(new_password))
+            )
+            conn.commit()
             return jsonify({"status": "success", "message": f"User '{new_username}' created."})
-        else:
-            # Nếu ghi thất bại, trả về lỗi
-            return jsonify({"status": "error", "message": "Failed to save user"}), 500
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        return jsonify({"status": "error", "message": "Username already exists"})
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Register DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "Failed to save user"}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route('/users', methods=['POST'])
 def get_users():
@@ -169,18 +175,26 @@ def get_users():
     if not is_admin_authenticated(data):
         return jsonify({"status": "error", "message": "Authentication failed"}), 401
     
-    users = read_encrypted_json()
-    safe_user_list = {
-        user: {
-            "role": data.get("role"),
-            "hwid": data.get("hwid"), 
-            "public_ip": data.get("public_ip"),
-            "status": data.get("status", "offline"),
-            "last_seen": data.get("last_seen", 0)
-            }
-        for user, data in users.items()
-    }
-    return jsonify({"status": "success", "users": safe_user_list})
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"status": "error", "message": "Database connection error"}), 500
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT username, role, hwid, public_ip, status, last_seen FROM users")
+            users_list = {}
+            for row in cursor.fetchall():
+                users_list[row[0]] = {
+                    "role": row[1], "hwid": row[2], "public_ip": row[3],
+                    "status": row[4], "last_seen": row[5]
+                }
+            return jsonify({"status": "success", "users": users_list})
+    except psycopg2.Error as e:
+        print(f"Get Users DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "Could not fetch users"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route('/reset-status', methods=['POST'])
 def handle_reset_status():
@@ -189,16 +203,28 @@ def handle_reset_status():
         return jsonify({"status": "error", "message": "Authentication failed"}), 401
         
     username_to_reset = data.get('username')
-    with file_lock:
-        users = read_encrypted_json()
-        if users and username_to_reset in users and users[username_to_reset].get("role") != "admin":
-            # Đặt lại trạng thái về offline
-            users[username_to_reset]["status"] = "offline"
-            write_encrypted_json(users)
-            return jsonify({"status": "success", "message": f"Status for '{username_to_reset}' has been reset to offline."})
-        else:
-            return jsonify({"status": "error", "message": "User not found or is an admin."})
-    return jsonify({"status": "error", "message": "Failed to reset status."}), 500
+    conn = get_db_connection()
+    if not conn: return jsonify({"status": "error", "message": "Database error"}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET status = 'offline' WHERE username = %s AND role != 'admin'",
+                (username_to_reset,)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return jsonify({"status": "success", "message": f"Status for '{username_to_reset}' has been reset."})
+            else:
+                return jsonify({"status": "error", "message": "User not found or is an admin."})
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Reset Status DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "Failed to reset status."}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route('/delete-user', methods=['POST'])
 def handle_delete_user():
@@ -207,74 +233,113 @@ def handle_delete_user():
         return jsonify({"status": "error", "message": "Authentication failed"}), 401
         
     username_to_delete = data.get('username')
-    with file_lock:
-        users = read_encrypted_json()
-        if username_to_delete in users and users[username_to_delete].get("role") != "admin":
-            del users[username_to_delete]
-            write_encrypted_json(users)
-            return jsonify({"status": "success", "message": f"User '{username_to_delete}' has been deleted."})
-        else:
-            return jsonify({"status": "error", "message": "User not found or is an admin."})
-    return jsonify({"status": "error", "message": "Failed to delete user."}), 500
+    conn = get_db_connection()
+    if not conn: return jsonify({"status": "error", "message": "Database error"}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM users WHERE username = %s AND role != 'admin'",
+                (username_to_delete,)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return jsonify({"status": "success", "message": f"User '{username_to_delete}' has been deleted."})
+            else:
+                return jsonify({"status": "error", "message": "User not found or is an admin."})
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Delete User DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "Failed to delete user."}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route('/heartbeat', methods=['POST'])
 def handle_heartbeat():
     data = request.get_json()
     username = data.get('username')
+    if not username: return jsonify({"status": "error", "message": "Username required"}), 400
     
-    if not username:
-        return jsonify({"status": "error", "message": "Username required"}), 400
-    with file_lock:
-        users = read_encrypted_json()
-        if users and username in users:
-            users[username]['status'] = 'online'
-            users[username]['last_seen'] = int(time.time()) # Ghi lại timestamp hiện tại
-            write_encrypted_json(users)
-            return jsonify({"status": "success"})
-        return jsonify({"status": "error", "message": "User not found"}), 404
-    return jsonify({"status": "error", "message": "Failed to update heartbeat"}), 500
+    conn = get_db_connection()
+    if not conn: return jsonify({"status": "error", "message": "Database error"}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET status = 'online', last_seen = %s WHERE username = %s",
+                (int(time.time()), username)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return jsonify({"status": "success"})
+            else:
+                return jsonify({"status": "error", "message": "User not found"}), 404
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Heartbeat DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "Failed to update heartbeat"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route('/logout', methods=['POST'])
 def handle_logout():
     data = request.get_json()
     username = data.get('username')
+    if not username: return jsonify({"status": "error", "message": "Username required"}), 400
+    
+    conn = get_db_connection()
+    if not conn: return jsonify({"status": "error", "message": "Database error"}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET status = 'offline' WHERE username = %s",
+                (username,)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return jsonify({"status": "success"})
+            else:
+                return jsonify({"status": "error", "message": "User not found"}), 404
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Logout DB Error: {e}", file=sys.stderr)
+        return jsonify({"status": "error", "message": "Logout failed"}), 500
+    finally:
+        if conn:
+            conn.close()
 
-    if not username:
-        return jsonify({"status": "error", "message": "Username required"}), 400
-
-    users = read_encrypted_json()
-    if users and username in users:
-        users[username]['status'] = 'offline'
-        write_encrypted_json(users)
-        return jsonify({"status": "success"})
-
-    return jsonify({"status": "error", "message": "User not found"}), 404
 
 @app.route('/check-offline', methods=['GET'])
 def check_offline_users():
-    with file_lock:
-        users = read_encrypted_json()
-        if not users:
-            return "No users to check", 200
+    timeout_seconds = 120
+    now = int(time.time())
+    
+    conn = get_db_connection()
+    if not conn: return "Database connection error", 500
 
-        now = int(time.time())
-        timeout_seconds = 120 # 2 phút
-        changed = False
+    try:
+        with conn.cursor() as cursor:
+            # Câu lệnh UPDATE hiệu quả hơn nhiều so với việc lặp bằng Python
+            cursor.execute(
+                "UPDATE users SET status = 'offline' WHERE status = 'online' AND %s - last_seen > %s",
+                (now, timeout_seconds)
+            )
+            conn.commit()
+            print(f"Offline check complete. {cursor.rowcount} users were marked as offline.")
+            return "Offline check complete", 200
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Check Offline DB Error: {e}", file=sys.stderr)
+        return "Failed to check offline users", 500
+    finally:
+        if conn:
+            conn.close()
 
-        for username, data in users.items():
-            if data.get('status') == 'online':
-                last_seen = data.get('last_seen', 0)
-                if now - last_seen > timeout_seconds:
-                    print(f"User {username} timed out. Marking as offline.")
-                    users[username]['status'] = 'offline'
-                    changed = True
-        
-        if changed:
-            write_encrypted_json(users)
 
-        return "Offline check complete", 200
-    return "Failed to check offline users", 500
-
-# Lệnh để chạy thử trên máy local, không dùng khi deploy
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
